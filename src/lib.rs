@@ -1,378 +1,42 @@
-//! Temporal Field Substrate - Shared ring buffer with decay
+//! Temporal Field Substrate
 //!
-//! The core mechanism underlying both BindingField (sensory) and ConvergenceField (cognitive).
-//! Provides a fixed-size ring buffer where patterns decay over time.
+//! A shared ring buffer with decay for cognitive architectures.
 //!
-//! ## Key Properties
+//! # Core Concept
 //!
+//! Temporal fields are the foundation for:
+//! - **BindingField**: Sensory pattern integration
+//! - **ConvergenceField**: Mesh output integration
+//! - **FocusField**: Interlocutor connection salience
+//!
+//! All share the same core mechanism:
 //! - **Ring buffer**: Fixed memory, oldest frames auto-evicted
 //! - **Decay per tick**: Time encoded in values, not metadata
 //! - **Regions**: Spatial partitioning for multi-channel integration
 //! - **Additive writes**: Multiple writers can contribute to same frame
+//!
+//! # Example
+//!
+//! ```rust
+//! use temporal_field::{TemporalFieldSubstrate, SubstrateConfig};
+//!
+//! let config = SubstrateConfig::new(64, 10, 0.95);
+//! let mut field = TemporalFieldSubstrate::new(config);
+//!
+//! // Write to a region
+//! field.write_region(&vec![0.5; 32], 0..32);
+//!
+//! // Advance time (decay happens)
+//! field.tick();
+//!
+//! // Check region activity
+//! assert!(field.region_active(0..32, 0.1));
+//! ```
 
+mod config;
+mod substrate;
 mod vector;
 
+pub use config::SubstrateConfig;
+pub use substrate::TemporalFieldSubstrate;
 pub use vector::FieldVector;
-
-use std::ops::Range;
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-/// Configuration for a temporal field substrate.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SubstrateConfig {
-    /// Number of dimensions per frame.
-    pub dims: usize,
-
-    /// Number of frames in the ring buffer.
-    pub frame_count: usize,
-
-    /// Decay retention per tick (0.0 = instant zero, 1.0 = no decay).
-    pub retention: f32,
-
-    /// Tick rate in Hz (for time calculations).
-    pub tick_rate_hz: u32,
-}
-
-impl SubstrateConfig {
-    /// Create a standard configuration.
-    pub fn new(dims: usize, frame_count: usize, retention: f32) -> Self {
-        Self {
-            dims,
-            frame_count,
-            retention,
-            tick_rate_hz: 100,
-        }
-    }
-
-    /// Get temporal window duration in milliseconds.
-    pub fn window_ms(&self) -> f32 {
-        (self.frame_count as f32 * 1000.0) / self.tick_rate_hz as f32
-    }
-
-    /// Validate configuration.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.dims == 0 {
-            return Err("dims must be > 0");
-        }
-        if self.frame_count == 0 {
-            return Err("frame_count must be > 0");
-        }
-        if !(0.0..=1.0).contains(&self.retention) {
-            return Err("retention must be in [0, 1]");
-        }
-        Ok(())
-    }
-}
-
-/// The core temporal field substrate.
-///
-/// A ring buffer of vectors where all values decay each tick.
-/// This is the shared foundation for:
-/// - BindingField (sensory pattern integration)
-/// - ConvergenceField (mesh output integration)
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct TemporalFieldSubstrate {
-    /// Ring buffer of frames.
-    frames: Vec<FieldVector>,
-
-    /// Configuration.
-    config: SubstrateConfig,
-
-    /// Current write position.
-    write_head: usize,
-
-    /// Total ticks elapsed.
-    tick_count: u64,
-}
-
-impl TemporalFieldSubstrate {
-    /// Create a new substrate with the given configuration.
-    pub fn new(config: SubstrateConfig) -> Self {
-        let frames = (0..config.frame_count)
-            .map(|_| FieldVector::new(config.dims))
-            .collect();
-
-        Self {
-            frames,
-            config,
-            write_head: 0,
-            tick_count: 0,
-        }
-    }
-
-    // =========================================================================
-    // TIME ADVANCEMENT
-    // =========================================================================
-
-    /// Advance time by one tick - decay all frames.
-    pub fn tick(&mut self) {
-        self.tick_count += 1;
-        for frame in &mut self.frames {
-            frame.decay(self.config.retention);
-        }
-    }
-
-    /// Advance multiple ticks.
-    pub fn tick_n(&mut self, n: usize) {
-        for _ in 0..n {
-            self.tick();
-        }
-    }
-
-    /// Advance write head to next frame.
-    pub fn advance_write_head(&mut self) {
-        self.write_head = (self.write_head + 1) % self.config.frame_count;
-    }
-
-    // =========================================================================
-    // WRITING
-    // =========================================================================
-
-    /// Write values to a region of the current frame (additive).
-    pub fn write_region(&mut self, values: &[f32], range: Range<usize>) {
-        self.frames[self.write_head].add_to_range(values, range);
-    }
-
-    /// Set values in a region of the current frame (replace, not add).
-    pub fn set_region(&mut self, values: &[f32], range: Range<usize>) {
-        self.frames[self.write_head].set_range(values, range);
-    }
-
-    /// Add a full vector to current frame.
-    pub fn write_full(&mut self, vector: &FieldVector) {
-        self.frames[self.write_head].add(vector);
-    }
-
-    /// Clear the current frame.
-    pub fn clear_current(&mut self) {
-        self.frames[self.write_head] = FieldVector::new(self.config.dims);
-    }
-
-    // =========================================================================
-    // READING
-    // =========================================================================
-
-    /// Read the current frame.
-    pub fn read_current(&self) -> &FieldVector {
-        &self.frames[self.write_head]
-    }
-
-    /// Read a specific region from current frame.
-    pub fn read_region(&self, range: Range<usize>) -> Vec<f32> {
-        self.frames[self.write_head].get_range(range)
-    }
-
-    /// Get energy in a region of current frame.
-    pub fn region_energy(&self, range: Range<usize>) -> f32 {
-        self.frames[self.write_head].range_energy(range)
-    }
-
-    /// Check if region is active (energy above threshold).
-    pub fn region_active(&self, range: Range<usize>, threshold: f32) -> bool {
-        self.region_energy(range) > threshold
-    }
-
-    /// Read the last N frames in chronological order (oldest first).
-    pub fn read_window(&self, n: usize) -> Vec<&FieldVector> {
-        let n = n.min(self.config.frame_count);
-        let mut result = Vec::with_capacity(n);
-
-        for i in 0..n {
-            let idx = (self.write_head + self.config.frame_count - n + 1 + i)
-                % self.config.frame_count;
-            result.push(&self.frames[idx]);
-        }
-
-        result
-    }
-
-    /// Get peak values in a region over the last N frames.
-    pub fn region_peak(&self, range: Range<usize>, window: usize) -> Vec<f32> {
-        let frames = self.read_window(window);
-        if frames.is_empty() {
-            return vec![0.0; range.len()];
-        }
-
-        let mut best_frame_idx = 0;
-        let mut best_energy = 0.0f32;
-
-        for (i, frame) in frames.iter().enumerate() {
-            let energy = frame.range_energy(range.clone());
-            if energy > best_energy {
-                best_energy = energy;
-                best_frame_idx = i;
-            }
-        }
-
-        frames[best_frame_idx].get_range(range)
-    }
-
-    /// Get mean values in a region over the last N frames.
-    pub fn region_mean(&self, range: Range<usize>, window: usize) -> Vec<f32> {
-        let frames = self.read_window(window);
-        if frames.is_empty() {
-            return vec![0.0; range.len()];
-        }
-
-        let len = range.len();
-        let mut avg = vec![0.0; len];
-
-        for frame in &frames {
-            for (i, idx) in range.clone().enumerate() {
-                avg[i] += frame.get(idx);
-            }
-        }
-
-        let n = frames.len() as f32;
-        for v in &mut avg {
-            *v /= n;
-        }
-
-        avg
-    }
-
-    // =========================================================================
-    // METRICS
-    // =========================================================================
-
-    /// Get configuration.
-    pub fn config(&self) -> &SubstrateConfig {
-        &self.config
-    }
-
-    /// Get current tick count.
-    pub fn tick_count(&self) -> u64 {
-        self.tick_count
-    }
-
-    /// Get write head position.
-    pub fn write_head(&self) -> usize {
-        self.write_head
-    }
-
-    /// Get total dimensions.
-    pub fn dims(&self) -> usize {
-        self.config.dims
-    }
-
-    /// Get frame count.
-    pub fn frame_count(&self) -> usize {
-        self.config.frame_count
-    }
-
-    /// Get maximum absolute value in field.
-    pub fn max_energy(&self) -> f32 {
-        self.frames
-            .iter()
-            .map(|f| f.max_abs())
-            .fold(0.0f32, f32::max)
-    }
-
-    /// Get total non-zero count.
-    pub fn total_activity(&self) -> usize {
-        self.frames.iter().map(|f| f.non_zero_count()).sum()
-    }
-
-    /// Clear entire field.
-    pub fn clear(&mut self) {
-        for frame in &mut self.frames {
-            *frame = FieldVector::new(self.config.dims);
-        }
-        self.write_head = 0;
-        self.tick_count = 0;
-    }
-
-    /// Convert tick difference to milliseconds.
-    pub fn ticks_to_ms(&self, ticks: u64) -> f32 {
-        (ticks as f32 * 1000.0) / self.config.tick_rate_hz as f32
-    }
-
-    /// Convert milliseconds to ticks.
-    pub fn ms_to_ticks(&self, ms: f32) -> u64 {
-        ((ms * self.config.tick_rate_hz as f32) / 1000.0).round() as u64
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_substrate() {
-        let config = SubstrateConfig::new(64, 10, 0.95);
-        let substrate = TemporalFieldSubstrate::new(config);
-
-        assert_eq!(substrate.dims(), 64);
-        assert_eq!(substrate.frame_count(), 10);
-        assert_eq!(substrate.tick_count(), 0);
-        assert_eq!(substrate.total_activity(), 0);
-    }
-
-    #[test]
-    fn test_write_and_read_region() {
-        let config = SubstrateConfig::new(128, 10, 0.95);
-        let mut substrate = TemporalFieldSubstrate::new(config);
-
-        let values = vec![0.5; 32];
-        substrate.write_region(&values, 0..32);
-
-        assert!(substrate.region_active(0..32, 0.1));
-        assert!(!substrate.region_active(32..64, 0.1));
-    }
-
-    #[test]
-    fn test_decay() {
-        let config = SubstrateConfig::new(64, 10, 0.5);
-        let mut substrate = TemporalFieldSubstrate::new(config);
-
-        substrate.write_region(&vec![1.0; 64], 0..64);
-        let initial = substrate.region_energy(0..64);
-
-        substrate.tick();
-        let after_tick = substrate.region_energy(0..64);
-
-        // Energy should be ~0.25 of initial (0.5^2 per value, summed)
-        assert!(after_tick < initial * 0.5);
-    }
-
-    #[test]
-    fn test_ring_buffer_wrap() {
-        let config = SubstrateConfig::new(64, 3, 1.0); // No decay
-        let mut substrate = TemporalFieldSubstrate::new(config);
-
-        // Write 5 frames (should wrap around)
-        for i in 0..5 {
-            substrate.clear_current();
-            substrate.write_region(&vec![(i + 1) as f32 * 0.1; 64], 0..64);
-            substrate.advance_write_head();
-        }
-
-        // Current position should be 5 % 3 = 2
-        assert_eq!(substrate.write_head(), 2);
-    }
-
-    #[test]
-    fn test_window_chronological() {
-        let config = SubstrateConfig::new(64, 5, 1.0);
-        let mut substrate = TemporalFieldSubstrate::new(config);
-
-        // Write 3 distinct values
-        for i in 0..3 {
-            substrate.clear_current();
-            substrate.write_region(&vec![(i + 1) as f32 * 0.25; 1], 0..1);
-            substrate.advance_write_head();
-        }
-
-        let window = substrate.read_window(3);
-        assert_eq!(window.len(), 3);
-
-        // Should be chronological (oldest first)
-        assert!((window[0].get(0) - 0.25).abs() < 0.01);
-        assert!((window[1].get(0) - 0.50).abs() < 0.01);
-        assert!((window[2].get(0) - 0.75).abs() < 0.01);
-    }
-}
