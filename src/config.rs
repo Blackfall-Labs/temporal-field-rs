@@ -1,12 +1,12 @@
-//! Substrate configuration
+//! Field configuration
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Configuration for a temporal field substrate.
+/// Configuration for a temporal field.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct SubstrateConfig {
+pub struct FieldConfig {
     /// Number of dimensions per frame.
     pub dims: usize,
 
@@ -20,7 +20,7 @@ pub struct SubstrateConfig {
     pub tick_rate_hz: u32,
 }
 
-impl SubstrateConfig {
+impl FieldConfig {
     /// Create a standard configuration.
     pub fn new(dims: usize, frame_count: usize, retention: f32) -> Self {
         Self {

@@ -18,10 +18,10 @@
 //! # Example
 //!
 //! ```rust
-//! use temporal_field::{TemporalFieldSubstrate, SubstrateConfig};
+//! use temporal_field::{TemporalField, FieldConfig};
 //!
-//! let config = SubstrateConfig::new(64, 10, 0.95);
-//! let mut field = TemporalFieldSubstrate::new(config);
+//! let config = FieldConfig::new(64, 10, 0.95);
+//! let mut field = TemporalField::new(config);
 //!
 //! // Write to a region
 //! field.write_region(&vec![0.5; 32], 0..32);
@@ -34,9 +34,9 @@
 //! ```
 
 mod config;
-mod substrate;
+mod field;
 mod vector;
 
-pub use config::SubstrateConfig;
-pub use substrate::TemporalFieldSubstrate;
+pub use config::FieldConfig;
+pub use field::TemporalField;
 pub use vector::FieldVector;

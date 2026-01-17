@@ -94,7 +94,7 @@ fn range_energy(&self, range: Range<usize>) -> f32 {
 
 Energy is the sum of squared values in a region. This measures activity regardless of polarity.
 
-## 3. TemporalFieldSubstrate
+## 3. TemporalField
 
 ### 3.1 Structure
 
@@ -119,7 +119,7 @@ Energy is the sum of squared values in a region. This measures activity regardle
 ### 3.2 Configuration
 
 ```rust
-pub struct SubstrateConfig {
+pub struct FieldConfig {
     dims: usize,        // Vector dimensions per frame
     frame_count: usize, // Ring buffer depth
     retention: f32,     // Decay factor per tick [0.0, 1.0]

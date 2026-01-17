@@ -1,13 +1,13 @@
-//! Temporal Field Substrate - the core ring buffer with decay
+//! Temporal Field - the core ring buffer with decay
 
-use crate::config::SubstrateConfig;
+use crate::config::FieldConfig;
 use crate::vector::FieldVector;
 use std::ops::Range;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// The core temporal field substrate.
+/// The core temporal field.
 ///
 /// A ring buffer of vectors where all values decay each tick.
 /// This is the shared foundation for:
@@ -15,12 +15,12 @@ use serde::{Deserialize, Serialize};
 /// - ConvergenceField (mesh output integration)
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct TemporalFieldSubstrate {
+pub struct TemporalField {
     /// Ring buffer of frames.
     frames: Vec<FieldVector>,
 
     /// Configuration.
-    config: SubstrateConfig,
+    config: FieldConfig,
 
     /// Current write position.
     write_head: usize,
@@ -29,9 +29,9 @@ pub struct TemporalFieldSubstrate {
     tick_count: u64,
 }
 
-impl TemporalFieldSubstrate {
-    /// Create a new substrate with the given configuration.
-    pub fn new(config: SubstrateConfig) -> Self {
+impl TemporalField {
+    /// Create a new field with the given configuration.
+    pub fn new(config: FieldConfig) -> Self {
         let frames = (0..config.frame_count)
             .map(|_| FieldVector::new(config.dims))
             .collect();
@@ -180,7 +180,7 @@ impl TemporalFieldSubstrate {
     // =========================================================================
 
     /// Get configuration.
-    pub fn config(&self) -> &SubstrateConfig {
+    pub fn config(&self) -> &FieldConfig {
         &self.config
     }
 
@@ -243,8 +243,8 @@ mod tests {
 
     #[test]
     fn test_new_substrate() {
-        let config = SubstrateConfig::new(64, 10, 0.95);
-        let substrate = TemporalFieldSubstrate::new(config);
+        let config = FieldConfig::new(64, 10, 0.95);
+        let substrate = TemporalField::new(config);
 
         assert_eq!(substrate.dims(), 64);
         assert_eq!(substrate.frame_count(), 10);
@@ -254,8 +254,8 @@ mod tests {
 
     #[test]
     fn test_write_and_read_region() {
-        let config = SubstrateConfig::new(128, 10, 0.95);
-        let mut substrate = TemporalFieldSubstrate::new(config);
+        let config = FieldConfig::new(128, 10, 0.95);
+        let mut substrate = TemporalField::new(config);
 
         let values = vec![0.5; 32];
         substrate.write_region(&values, 0..32);
@@ -266,8 +266,8 @@ mod tests {
 
     #[test]
     fn test_decay() {
-        let config = SubstrateConfig::new(64, 10, 0.5);
-        let mut substrate = TemporalFieldSubstrate::new(config);
+        let config = FieldConfig::new(64, 10, 0.5);
+        let mut substrate = TemporalField::new(config);
 
         substrate.write_region(&vec![1.0; 64], 0..64);
         let initial = substrate.region_energy(0..64);
@@ -281,8 +281,8 @@ mod tests {
 
     #[test]
     fn test_ring_buffer_wrap() {
-        let config = SubstrateConfig::new(64, 3, 1.0); // No decay
-        let mut substrate = TemporalFieldSubstrate::new(config);
+        let config = FieldConfig::new(64, 3, 1.0); // No decay
+        let mut substrate = TemporalField::new(config);
 
         // Write 5 frames (should wrap around)
         for i in 0..5 {
@@ -297,8 +297,8 @@ mod tests {
 
     #[test]
     fn test_window_chronological() {
-        let config = SubstrateConfig::new(64, 5, 1.0);
-        let mut substrate = TemporalFieldSubstrate::new(config);
+        let config = FieldConfig::new(64, 5, 1.0);
+        let mut substrate = TemporalField::new(config);
 
         // Write 3 distinct values
         for i in 0..3 {

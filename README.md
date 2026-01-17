@@ -51,11 +51,11 @@ All share the same substrate - only configuration differs.
 ## Usage
 
 ```rust
-use temporal_field::{TemporalFieldSubstrate, SubstrateConfig};
+use temporal_field::{TemporalField, FieldConfig};
 
 // Create a 64-dimensional field with 10 frames, 95% retention
-let config = SubstrateConfig::new(64, 10, 0.95);
-let mut field = TemporalFieldSubstrate::new(config);
+let config = FieldConfig::new(64, 10, 0.95);
+let mut field = TemporalField::new(config);
 
 // Write to a region (additive)
 field.write_region(&vec![0.5; 32], 0..32);
