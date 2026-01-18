@@ -1,4 +1,63 @@
-# Temporal Field Substrate Specification
+# Temporal Field Specification
+
+**The brain does not poll - one spark cascades.**
+
+## 0. Architecture: Field / Writer / Reader
+
+The system separates into three roles:
+
+### 0.1 The Field
+
+The substrate - a ring buffer with decay. Holds:
+- `frames: Vec<FieldVector>` - the ring buffer
+- `write_head: usize` - current write position
+- `tick_count: u64` - time counter
+- `observers: Vec<Arc<dyn FieldObserver>>` - subscribed readers
+- `triggers: TriggerConfig` - what fires events
+
+### 0.2 Writers
+
+Anything that calls write methods:
+- Cochlea writes audio features to `0..64`
+- Tokenizer writes text embeddings to `64..128`
+- Motor mesh writes action patterns to `128..192`
+
+Writers don't know about each other. They just write to their region.
+Additive semantics allow multiple writers to contribute to the same frame.
+
+### 0.3 Readers
+
+FieldObservers that receive events when thresholds cross:
+
+```rust
+pub trait FieldObserver: Send + Sync {
+    fn on_event(&self, event: FieldEvent);
+}
+```
+
+Readers subscribe with `field.subscribe(observer)` and receive:
+- `RegionActive` - a region crossed above threshold
+- `RegionQuiet` - a region dropped below threshold
+- `Convergence` - N+ regions simultaneously active
+
+### 0.4 The Pattern
+
+```rust
+// 1. Create field
+let mut field = TemporalField::new(config);
+
+// 2. Configure what triggers events
+field.monitor_region(MonitoredRegion::new("audio", 0..64, 0.1));
+field.monitor_region(MonitoredRegion::new("text", 64..128, 0.1));
+field.set_convergence_threshold(2);
+
+// 3. Subscribe readers
+field.subscribe(Arc::new(my_binding_detector));
+
+// 4. Writers write - events fire automatically
+field.write_region(&audio_features, 0..64);   // may fire RegionActive
+field.write_region(&text_embedding, 64..128); // may fire Convergence
+```
 
 ## 1. Floating Ternary Representation
 
@@ -236,6 +295,117 @@ The same substrate serves multiple purposes:
 
 Configuration differs; mechanism is identical.
 
-## 6. Origin
+## 6. Pub/Sub Events
+
+### 6.1 MonitoredRegion with Hysteresis
+
+A region to watch for activity, with hysteresis to prevent threshold chattering:
+
+```rust
+pub struct MonitoredRegion {
+    pub name: String,         // For debugging
+    pub range: Range<usize>,  // Which dimensions
+    pub on_threshold: f32,    // Energy threshold to become active (higher)
+    pub off_threshold: f32,   // Energy threshold to become quiet (lower)
+    pub weight: f32,          // Contribution to convergence energy
+}
+```
+
+**Why hysteresis?** Crisp thresholds can chatter when values hover near the boundary
+(especially with decay + additive writes). Two thresholds provide stable transitions:
+
+```
+Energy axis:
+                    off_threshold    on_threshold
+         ──────────────┼─────────────────┼──────────────→
+         quiet         │   hysteresis    │   active
+                       │     zone        │
+                       │                 │
+         ←─ stay quiet ┤                 ├─ become active
+                       │                 │
+         become quiet ─┤                 ├─ stay active →
+```
+
+- To **enter active**: energy must exceed `on_threshold`
+- To **leave active**: energy must drop below `off_threshold`
+- **Between thresholds**: previous state is maintained
+
+Default hysteresis gap is 20%: `off_threshold = on_threshold * 0.8`
+
+```rust
+// Automatic hysteresis (20% gap)
+MonitoredRegion::new("audio", 0..64, 0.1)
+// on_threshold = 0.1, off_threshold = 0.08
+
+// Explicit hysteresis
+MonitoredRegion::with_hysteresis("audio", 0..64, 0.1, 0.05)
+// on_threshold = 0.1, off_threshold = 0.05
+
+// Custom gap
+MonitoredRegion::new("audio", 0..64, 0.1).with_gap(0.3)
+// on_threshold = 0.1, off_threshold = 0.07
+```
+
+### 6.2 TriggerConfig
+
+Configuration for what fires events:
+
+```rust
+pub struct TriggerConfig {
+    pub regions: Vec<MonitoredRegion>,
+    pub convergence_threshold: usize, // How many regions for Convergence
+}
+```
+
+### 6.3 FieldEvent
+
+Events fired to observers:
+
+```rust
+pub enum FieldEvent {
+    /// A region crossed above on_threshold (edge: inactive → active)
+    RegionActive {
+        region: Range<usize>,
+        energy: f32,
+        threshold: f32,  // The on_threshold that was crossed
+    },
+
+    /// A region dropped below off_threshold (edge: active → inactive)
+    RegionQuiet {
+        region: Range<usize>,
+        energy: f32,
+        threshold: f32,  // The off_threshold that was crossed
+    },
+
+    /// Multiple regions are simultaneously active
+    Convergence {
+        active_regions: Vec<Range<usize>>,
+        total_energy: f32,
+    },
+}
+```
+
+### 6.4 Edge Detection with Hysteresis
+
+Events fire on **transitions**, not continuous states:
+- `RegionActive` fires once when energy crosses above `on_threshold`
+- `RegionQuiet` fires once when energy drops below `off_threshold`
+- No events when energy is between thresholds (hysteresis zone)
+- No repeated events while region stays active/quiet
+
+This prevents event storms and threshold chattering, matching biological spike semantics.
+The hysteresis zone acts as a refractory period without explicit refractory state.
+
+### 6.5 When Events Fire
+
+Events are checked after:
+- `write_region()` - writer may push region above threshold
+- `set_region()` - writer may change region state
+- `write_full()` - writer may affect multiple regions
+- `tick()` - decay may drop regions below threshold
+
+## 7. Origin
 
 This substrate was extracted from a larger cognitive architecture project to enforce a single API plane for temporal field operations across multiple applications.
+
+The pub/sub pattern was added to implement the principle: **The brain does not poll - one spark cascades.**
