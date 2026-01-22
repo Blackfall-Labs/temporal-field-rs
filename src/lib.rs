@@ -1,6 +1,11 @@
-//! Temporal Field - Floating-point ternary ring buffer with pub/sub
+//! Temporal Field - Ring buffer substrate for cognitive architectures
 //!
 //! The brain does not poll - one spark cascades.
+//!
+//! # Core Types
+//!
+//! - **TernarySignal**: Universal 2-byte neural signal (polarity + magnitude)
+//! - **TemporalField**: Ring buffer with decay and pub/sub events
 //!
 //! # Architecture: Field / Writer / Reader
 //!
@@ -20,6 +25,7 @@
 //! - **Decay per tick**: Time encoded in values, not metadata
 //! - **Regions**: Spatial partitioning for multi-channel integration
 //! - **Pub/sub**: Writes fire events to observers automatically
+//! - **TernarySignal**: Compact neural representation (polarity + magnitude)
 //!
 //! # Evolution
 //!
@@ -91,3 +97,6 @@ pub use config::FieldConfig;
 pub use field::TemporalField;
 pub use observer::{FieldEvent, FieldObserver, FnObserver, MonitoredRegion, TriggerConfig};
 pub use vector::FieldVector;
+
+// TernarySignal: Re-export from ternsig (the authoritative source)
+pub use ternsig::TernarySignal;
