@@ -3,6 +3,8 @@
 //! When a write crosses a threshold, observers are notified automatically.
 //! No polling required - sparks propagate.
 //!
+//! ASTRO_004 compliant: No floats. Energy as u32, thresholds as u32.
+//!
 //! ## Hysteresis
 //!
 //! Thresholds use hysteresis to prevent chattering when values hover near
@@ -22,26 +24,30 @@ pub enum FieldEvent {
     /// A region became active (energy crossed on_threshold from below)
     RegionActive {
         region: Range<usize>,
-        energy: f32,
+        /// Energy as sum of squared magnitudes
+        energy: u32,
         /// The on_threshold that was crossed
-        threshold: f32,
+        threshold: u32,
     },
     /// A region went quiet (energy dropped below off_threshold)
     RegionQuiet {
         region: Range<usize>,
-        energy: f32,
+        /// Energy as sum of squared magnitudes
+        energy: u32,
         /// The off_threshold that was crossed
-        threshold: f32,
+        threshold: u32,
     },
     /// Multiple regions active simultaneously (binding opportunity)
     Convergence {
         active_regions: Vec<Range<usize>>,
-        total_energy: f32,
+        /// Total weighted energy (sum of energy × weight for each active region)
+        total_energy: u32,
     },
     /// Peak detected in a region (local maximum)
     Peak {
         region: Range<usize>,
-        energy: f32,
+        /// Energy as sum of squared magnitudes
+        energy: u32,
         tick: u64,
     },
 }
@@ -87,6 +93,10 @@ pub struct TriggerConfig {
     pub convergence_threshold: usize,
 }
 
+/// Default hysteresis gap as percentage (20 = 20%).
+/// off_threshold = on_threshold * (100 - gap) / 100
+pub const DEFAULT_HYSTERESIS_GAP: u8 = 20;
+
 /// A region being monitored for activity with hysteresis thresholds.
 ///
 /// ## Hysteresis
@@ -96,6 +106,12 @@ pub struct TriggerConfig {
 /// - `off_threshold`: Energy must drop below this to become quiet
 ///
 /// When energy is between the thresholds, the previous state is maintained.
+///
+/// ## Energy Units
+///
+/// Energy is sum of squared magnitudes: Σ(magnitude²)
+/// For 64 dims with all magnitudes at 128: 64 × 128² = 1,048,576
+/// For 64 dims with all magnitudes at 255: 64 × 255² = 4,161,600
 #[derive(Clone, Debug)]
 pub struct MonitoredRegion {
     /// Name for identification
@@ -103,29 +119,28 @@ pub struct MonitoredRegion {
     /// Dimension range
     pub range: Range<usize>,
     /// Energy threshold to enter active state (higher threshold)
-    pub on_threshold: f32,
+    /// Energy = sum of squared magnitudes
+    pub on_threshold: u32,
     /// Energy threshold to leave active state (lower threshold)
-    pub off_threshold: f32,
-    /// Weight for convergence calculation
-    pub weight: f32,
+    pub off_threshold: u32,
+    /// Weight for convergence calculation (100 = 1.0×)
+    pub weight: u8,
 }
-
-/// Default hysteresis gap as a fraction of on_threshold.
-/// off_threshold = on_threshold * (1.0 - HYSTERESIS_GAP)
-pub const DEFAULT_HYSTERESIS_GAP: f32 = 0.2;
 
 impl MonitoredRegion {
     /// Create a new monitored region with automatic hysteresis.
     ///
     /// The off_threshold is set to 80% of the on_threshold by default,
     /// providing a 20% hysteresis gap to prevent chattering.
-    pub fn new(name: impl Into<String>, range: Range<usize>, threshold: f32) -> Self {
+    ///
+    /// threshold: Energy threshold (sum of squared magnitudes)
+    pub fn new(name: impl Into<String>, range: Range<usize>, threshold: u32) -> Self {
         Self {
             name: name.into(),
             range,
             on_threshold: threshold,
-            off_threshold: threshold * (1.0 - DEFAULT_HYSTERESIS_GAP),
-            weight: 1.0,
+            off_threshold: threshold * (100 - DEFAULT_HYSTERESIS_GAP as u32) / 100,
+            weight: 100,
         }
     }
 
@@ -140,8 +155,8 @@ impl MonitoredRegion {
     pub fn with_hysteresis(
         name: impl Into<String>,
         range: Range<usize>,
-        on_threshold: f32,
-        off_threshold: f32,
+        on_threshold: u32,
+        off_threshold: u32,
     ) -> Self {
         debug_assert!(
             off_threshold <= on_threshold,
@@ -154,29 +169,31 @@ impl MonitoredRegion {
             range,
             on_threshold,
             off_threshold,
-            weight: 1.0,
+            weight: 100,
         }
     }
 
-    /// Set the hysteresis gap as a fraction (0.0 to 1.0).
+    /// Set the hysteresis gap as percentage (0-100).
     ///
-    /// off_threshold = on_threshold * (1.0 - gap)
-    pub fn with_gap(mut self, gap: f32) -> Self {
-        self.off_threshold = self.on_threshold * (1.0 - gap.clamp(0.0, 1.0));
+    /// off_threshold = on_threshold * (100 - gap) / 100
+    pub fn with_gap(mut self, gap: u8) -> Self {
+        let gap = gap.min(100);
+        self.off_threshold = self.on_threshold * (100 - gap as u32) / 100;
         self
     }
 
-    pub fn with_weight(mut self, weight: f32) -> Self {
+    /// Set weight (100 = 1.0×, 150 = 1.5×)
+    pub fn with_weight(mut self, weight: u8) -> Self {
         self.weight = weight;
         self
     }
 
-    /// Get the hysteresis gap as a fraction.
-    pub fn hysteresis_gap(&self) -> f32 {
-        if self.on_threshold > 0.0 {
-            1.0 - (self.off_threshold / self.on_threshold)
+    /// Get the hysteresis gap as percentage.
+    pub fn hysteresis_gap(&self) -> u8 {
+        if self.on_threshold > 0 {
+            (100 - (self.off_threshold * 100 / self.on_threshold)) as u8
         } else {
-            0.0
+            0
         }
     }
 }
@@ -187,5 +204,40 @@ impl Default for TriggerConfig {
             regions: Vec::new(),
             convergence_threshold: 2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_hysteresis() {
+        // Default gap is 20%
+        let region = MonitoredRegion::new("test", 0..32, 1000);
+        assert_eq!(region.on_threshold, 1000);
+        assert_eq!(region.off_threshold, 800); // 1000 * 80 / 100
+        assert_eq!(region.hysteresis_gap(), 20);
+    }
+
+    #[test]
+    fn test_custom_hysteresis() {
+        let region = MonitoredRegion::with_hysteresis("test", 0..32, 1000, 700);
+        assert_eq!(region.on_threshold, 1000);
+        assert_eq!(region.off_threshold, 700);
+        assert_eq!(region.hysteresis_gap(), 30);
+    }
+
+    #[test]
+    fn test_with_gap() {
+        let region = MonitoredRegion::new("test", 0..32, 1000).with_gap(30);
+        assert_eq!(region.on_threshold, 1000);
+        assert_eq!(region.off_threshold, 700); // 1000 * 70 / 100
+    }
+
+    #[test]
+    fn test_with_weight() {
+        let region = MonitoredRegion::new("test", 0..32, 1000).with_weight(150);
+        assert_eq!(region.weight, 150);
     }
 }

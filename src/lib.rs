@@ -2,9 +2,11 @@
 //!
 //! The brain does not poll - one spark cascades.
 //!
+//! ASTRO_004 compliant: No floats. Signal (polarity + magnitude) throughout.
+//!
 //! # Core Types
 //!
-//! - **TernarySignal**: Universal 2-byte neural signal (polarity + magnitude)
+//! - **Signal**: Universal 2-byte neural signal (polarity: i8, magnitude: u8)
 //! - **TemporalField**: Ring buffer with decay and pub/sub events
 //!
 //! # Architecture: Field / Writer / Reader
@@ -22,16 +24,19 @@
 //! # Core Concepts
 //!
 //! - **Ring buffer**: Fixed memory, oldest frames auto-evicted
-//! - **Decay per tick**: Time encoded in values, not metadata
+//! - **Decay per tick**: Time encoded in values, not metadata (retention: u8, 255 = 1.0)
 //! - **Regions**: Spatial partitioning for multi-channel integration
 //! - **Pub/sub**: Writes fire events to observers automatically
-//! - **TernarySignal**: Compact neural representation (polarity + magnitude)
+//! - **Signal**: Compact neural representation (s = polarity × magnitude)
 //!
-//! # Evolution
+//! # Integer Conventions
 //!
-//! FloatingTernary → Temporal Binding Fields → Temporal Fields
-//!
-//! One system that evolved. Every write triggers downstream processing.
+//! | Parameter | Type | Scale | Examples |
+//! |-----------|------|-------|----------|
+//! | retention | u8 | 255 = 1.0 | 242 ≈ 0.95, 230 ≈ 0.90, 128 = 0.50 |
+//! | threshold | u32 | sum of magnitude² | 524288 = 32 dims × 128² |
+//! | weight | u8 | 100 = 1.0× | 150 = 1.5×, 80 = 0.8× |
+//! | energy | u32 | Σ(magnitude²) | max = 64 × 255² = 4,161,600 |
 //!
 //! # Example: Multimodal Binding Detection
 //!
@@ -40,6 +45,7 @@
 //!
 //! ```rust
 //! use temporal_field::{TemporalField, FieldConfig, FieldEvent, MonitoredRegion, FnObserver};
+//! use ternsig::Signal;
 //! use std::sync::Arc;
 //!
 //! // Region definitions (like SensoryField's ModalityRegions)
@@ -47,12 +53,14 @@
 //! const TEXT_REGION: std::ops::Range<usize> = 64..128;
 //!
 //! // 1. Create the Field (the substrate)
-//! let config = FieldConfig::new(128, 50, 0.95); // 128 dims, 50 frames, 0.95 retention
+//! // 128 dims, 50 frames, retention 242 (≈0.95)
+//! let config = FieldConfig::new(128, 50, 242);
 //! let mut field = TemporalField::new(config);
 //!
 //! // 2. Configure monitored regions (what triggers events)
-//! field.monitor_region(MonitoredRegion::new("audio", AUDIO_REGION, 0.1));
-//! field.monitor_region(MonitoredRegion::new("text", TEXT_REGION, 0.1));
+//! // Threshold: energy needed to activate (e.g., 100_000 = ~50 dims at mag 45)
+//! field.monitor_region(MonitoredRegion::new("audio", AUDIO_REGION, 100_000));
+//! field.monitor_region(MonitoredRegion::new("text", TEXT_REGION, 100_000));
 //! field.set_convergence_threshold(2); // Fire when 2+ regions active
 //!
 //! // 3. Subscribe Reader (binding detector)
@@ -69,18 +77,18 @@
 //!     }
 //! })));
 //!
-//! // 4. Writers write to their regions
-//! // Cochlea writes audio features
-//! let audio_features = vec![0.5; 64];
+//! // 4. Writers write to their regions using Signals
+//! // Cochlea writes audio features (magnitude 128 = moderate activation)
+//! let audio_features = vec![Signal::positive(128); 64];
 //! field.write_region(&audio_features, AUDIO_REGION);
 //!
 //! // Tokenizer writes text embedding
-//! let text_embedding = vec![0.3; 64];
+//! let text_embedding = vec![Signal::positive(100); 64];
 //! field.write_region(&text_embedding, TEXT_REGION);
 //! // ^ This triggers Convergence event because both regions are now active
 //!
 //! // 5. Time advances - decay happens automatically
-//! field.tick(); // All values decay by retention factor
+//! field.tick(); // All magnitudes decay by retention factor
 //! ```
 //!
 //! # Key Insight
@@ -98,5 +106,9 @@ pub use field::TemporalField;
 pub use observer::{FieldEvent, FieldObserver, FnObserver, MonitoredRegion, TriggerConfig};
 pub use vector::FieldVector;
 
-// TernarySignal: Re-export from ternsig (the authoritative source)
-pub use ternsig::TernarySignal;
+// Signal: Re-export from ternsig (the authoritative source)
+pub use ternsig::Signal;
+
+// Deprecated alias for v1 compatibility
+#[deprecated(since = "0.4.0", note = "Use Signal instead")]
+pub type TernarySignal = Signal;

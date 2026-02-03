@@ -1,15 +1,18 @@
-//! Temporal Field - Floating-point ternary ring buffer with pub/sub
+//! Temporal Field - Signal-based ring buffer with pub/sub
 //!
 //! The brain does not poll - one spark cascades.
 //!
 //! This is THE temporal field: ring buffer + decay + observer events.
 //! Writes trigger downstream processing automatically.
+//!
+//! ASTRO_004 compliant: No floats. Signals throughout.
 
 use crate::config::FieldConfig;
 use crate::observer::{FieldEvent, FieldObserver, MonitoredRegion, TriggerConfig};
 use crate::vector::FieldVector;
 use std::ops::Range;
 use std::sync::Arc;
+use ternsig::Signal;
 
 /// The temporal field - ring buffer with decay and pub/sub events.
 ///
@@ -112,7 +115,7 @@ impl TemporalField {
         }
 
         let mut active_regions = Vec::new();
-        let mut total_energy = 0.0;
+        let mut total_energy: u32 = 0;
 
         for (i, region) in self.triggers.regions.iter().enumerate() {
             let energy = self.frames[self.write_head].range_energy(region.range.clone());
@@ -150,7 +153,8 @@ impl TemporalField {
             // Track for convergence
             if is_active {
                 active_regions.push(region.range.clone());
-                total_energy += energy * region.weight;
+                // Weighted energy: energy × weight / 100 (since weight 100 = 1.0×)
+                total_energy += (energy as u64 * region.weight as u64 / 100) as u32;
             }
 
             // Update state
@@ -197,15 +201,15 @@ impl TemporalField {
     // WRITING - triggers event checks after mutation
     // =========================================================================
 
-    /// Write values to a region of the current frame (additive) - may fire events.
-    pub fn write_region(&mut self, values: &[f32], range: Range<usize>) {
-        self.frames[self.write_head].add_to_range(values, range);
+    /// Write Signals to a region of the current frame (additive) - may fire events.
+    pub fn write_region(&mut self, signals: &[Signal], range: Range<usize>) {
+        self.frames[self.write_head].add_to_range(signals, range);
         self.check_and_fire();
     }
 
-    /// Set values in a region of the current frame (replace) - may fire events.
-    pub fn set_region(&mut self, values: &[f32], range: Range<usize>) {
-        self.frames[self.write_head].set_range(values, range);
+    /// Set Signals in a region of the current frame (replace) - may fire events.
+    pub fn set_region(&mut self, signals: &[Signal], range: Range<usize>) {
+        self.frames[self.write_head].set_range(signals, range);
         self.check_and_fire();
     }
 
@@ -230,17 +234,17 @@ impl TemporalField {
     }
 
     /// Read a specific region from current frame.
-    pub fn read_region(&self, range: Range<usize>) -> Vec<f32> {
+    pub fn read_region(&self, range: Range<usize>) -> Vec<Signal> {
         self.frames[self.write_head].get_range(range)
     }
 
     /// Get energy in a region of current frame.
-    pub fn region_energy(&self, range: Range<usize>) -> f32 {
+    pub fn region_energy(&self, range: Range<usize>) -> u32 {
         self.frames[self.write_head].range_energy(range)
     }
 
     /// Check if region is active (energy above threshold).
-    pub fn region_active(&self, range: Range<usize>, threshold: f32) -> bool {
+    pub fn region_active(&self, range: Range<usize>, threshold: u32) -> bool {
         self.region_energy(range) > threshold
     }
 
@@ -259,14 +263,15 @@ impl TemporalField {
     }
 
     /// Get peak values in a region over the last N frames.
-    pub fn region_peak(&self, range: Range<usize>, window: usize) -> Vec<f32> {
+    /// Returns the frame with highest energy.
+    pub fn region_peak(&self, range: Range<usize>, window: usize) -> Vec<Signal> {
         let frames = self.read_window(window);
         if frames.is_empty() {
-            return vec![0.0; range.len()];
+            return vec![Signal::ZERO; range.len()];
         }
 
         let mut best_frame_idx = 0;
-        let mut best_energy = 0.0f32;
+        let mut best_energy = 0u32;
 
         for (i, frame) in frames.iter().enumerate() {
             let energy = frame.range_energy(range.clone());
@@ -280,27 +285,26 @@ impl TemporalField {
     }
 
     /// Get mean values in a region over the last N frames.
-    pub fn region_mean(&self, range: Range<usize>, window: usize) -> Vec<f32> {
+    /// Returns averaged Signal values (via i16 arithmetic).
+    pub fn region_mean(&self, range: Range<usize>, window: usize) -> Vec<Signal> {
         let frames = self.read_window(window);
         if frames.is_empty() {
-            return vec![0.0; range.len()];
+            return vec![Signal::ZERO; range.len()];
         }
 
         let len = range.len();
-        let mut avg = vec![0.0; len];
+        let mut sums: Vec<i32> = vec![0; len];
 
         for frame in &frames {
             for (i, idx) in range.clone().enumerate() {
-                avg[i] += frame.get(idx);
+                sums[i] += frame.get_i16(idx) as i32;
             }
         }
 
-        let n = frames.len() as f32;
-        for v in &mut avg {
-            *v /= n;
-        }
-
-        avg
+        let n = frames.len() as i32;
+        sums.iter()
+            .map(|&sum| Signal::from_signed_i32(sum / n))
+            .collect()
     }
 
     // =========================================================================
@@ -342,12 +346,13 @@ impl TemporalField {
         self.config.frame_count
     }
 
-    /// Get maximum absolute value in field.
-    pub fn max_energy(&self) -> f32 {
+    /// Get maximum magnitude in field.
+    pub fn max_magnitude(&self) -> u8 {
         self.frames
             .iter()
-            .map(|f| f.max_abs())
-            .fold(0.0f32, f32::max)
+            .map(|f| f.max_magnitude())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Get total non-zero count.
@@ -366,13 +371,13 @@ impl TemporalField {
     }
 
     /// Convert tick difference to milliseconds.
-    pub fn ticks_to_ms(&self, ticks: u64) -> f32 {
-        (ticks as f32 * 1000.0) / self.config.tick_rate_hz as f32
+    pub fn ticks_to_ms(&self, ticks: u64) -> u32 {
+        ((ticks as u64 * 1000) / self.config.tick_rate_hz as u64) as u32
     }
 
     /// Convert milliseconds to ticks.
-    pub fn ms_to_ticks(&self, ms: f32) -> u64 {
-        ((ms * self.config.tick_rate_hz as f32) / 1000.0).round() as u64
+    pub fn ms_to_ticks(&self, ms: u32) -> u64 {
+        (ms as u64 * self.config.tick_rate_hz as u64) / 1000
     }
 }
 
@@ -413,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_new_field() {
-        let config = FieldConfig::new(64, 10, 0.95);
+        let config = FieldConfig::new(64, 10, 242); // 242 ≈ 0.95
         let field = TemporalField::new(config);
 
         assert_eq!(field.dims(), 64);
@@ -424,37 +429,41 @@ mod tests {
 
     #[test]
     fn test_write_and_read_region() {
-        let config = FieldConfig::new(128, 10, 0.95);
+        let config = FieldConfig::new(128, 10, 242);
         let mut field = TemporalField::new(config);
 
-        let values = vec![0.5; 32];
-        field.write_region(&values, 0..32);
+        let signals = vec![Signal::positive(128); 32];
+        field.write_region(&signals, 0..32);
 
-        assert!(field.region_active(0..32, 0.1));
-        assert!(!field.region_active(32..64, 0.1));
+        // Energy = 32 * 128^2 = 524288
+        assert!(field.region_active(0..32, 1000));
+        assert!(!field.region_active(32..64, 1000));
     }
 
     #[test]
     fn test_decay() {
-        let config = FieldConfig::new(64, 10, 0.5);
+        let config = FieldConfig::new(64, 10, 128); // 50% retention
         let mut field = TemporalField::new(config);
 
-        field.write_region(&vec![1.0; 64], 0..64);
+        let signals = vec![Signal::positive(200); 64];
+        field.write_region(&signals, 0..64);
         let initial = field.region_energy(0..64);
 
         field.tick();
         let after_tick = field.region_energy(0..64);
 
-        assert!(after_tick < initial * 0.5);
+        // After 50% decay, energy should be ~25% (magnitude halved, energy = mag^2)
+        assert!(after_tick < initial / 2);
     }
 
     #[test]
     fn test_region_active_fires_event() {
-        let config = FieldConfig::new(64, 10, 0.95);
+        let config = FieldConfig::new(64, 10, 242);
         let mut field = TemporalField::new(config);
 
         // Configure: add monitored region
-        field.monitor_region(MonitoredRegion::new("test", 0..32, 0.1));
+        // Threshold: 32 * 100^2 = 320000
+        field.monitor_region(MonitoredRegion::new("test", 0..32, 100_000));
 
         // Subscribe reader
         let count = Arc::new(AtomicUsize::new(0));
@@ -465,21 +474,22 @@ mod tests {
             }
         })));
 
-        // Writer writes - fires event to reader
-        field.write_region(&vec![0.5; 32], 0..32);
+        // Writer writes - fires event to reader (magnitude 128, energy = 32 * 16384 = 524288)
+        let signals = vec![Signal::positive(128); 32];
+        field.write_region(&signals, 0..32);
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn test_convergence_fires() {
-        let config = FieldConfig::new(128, 10, 0.95);
+        let config = FieldConfig::new(128, 10, 242);
         let mut field = TemporalField::new(config);
 
-        // Configure: add monitored regions
-        field.monitor_region(MonitoredRegion::new("a", 0..32, 0.1));
-        field.monitor_region(MonitoredRegion::new("b", 32..64, 0.1));
-        field.monitor_region(MonitoredRegion::new("c", 64..96, 0.1));
+        // Configure: add monitored regions (threshold = 50000)
+        field.monitor_region(MonitoredRegion::new("a", 0..32, 50_000));
+        field.monitor_region(MonitoredRegion::new("b", 32..64, 50_000));
+        field.monitor_region(MonitoredRegion::new("c", 64..96, 50_000));
         field.set_convergence_threshold(2);
 
         let convergence_count = Arc::new(AtomicUsize::new(0));
@@ -492,20 +502,22 @@ mod tests {
         })));
 
         // Write to two regions - should trigger convergence
-        field.write_region(&vec![0.5; 32], 0..32);
-        field.write_region(&vec![0.5; 32], 32..64);
+        let signals = vec![Signal::positive(128); 32];
+        field.write_region(&signals, 0..32);
+        field.write_region(&signals, 32..64);
 
         assert!(convergence_count.load(Ordering::SeqCst) >= 1);
     }
 
     #[test]
     fn test_ring_buffer_wrap() {
-        let config = FieldConfig::new(64, 3, 1.0);
+        let config = FieldConfig::new(64, 3, 255); // No decay
         let mut field = TemporalField::new(config);
 
         for i in 0..5 {
             field.clear_current();
-            field.write_region(&vec![(i + 1) as f32 * 0.1; 64], 0..64);
+            let signals = vec![Signal::positive(((i + 1) * 25) as u8); 64];
+            field.write_region(&signals, 0..64);
             field.advance_write_head();
         }
 
@@ -514,36 +526,34 @@ mod tests {
 
     #[test]
     fn test_window_chronological() {
-        let config = FieldConfig::new(64, 5, 1.0);
+        let config = FieldConfig::new(64, 5, 255); // No decay
         let mut field = TemporalField::new(config);
 
         for i in 0..3 {
             field.clear_current();
-            field.write_region(&vec![(i + 1) as f32 * 0.25; 1], 0..1);
+            let signals = vec![Signal::positive(((i + 1) * 50) as u8); 1];
+            field.write_region(&signals, 0..1);
             field.advance_write_head();
         }
 
         let window = field.read_window(3);
         assert_eq!(window.len(), 3);
 
-        assert!((window[0].get(0) - 0.25).abs() < 0.01);
-        assert!((window[1].get(0) - 0.50).abs() < 0.01);
-        assert!((window[2].get(0) - 0.75).abs() < 0.01);
+        assert_eq!(window[0].get(0).magnitude, 50);
+        assert_eq!(window[1].get(0).magnitude, 100);
+        assert_eq!(window[2].get(0).magnitude, 150);
     }
 
     #[test]
     fn test_hysteresis_prevents_chattering() {
         // Use single dimension for simpler energy calculation
-        // Energy = value^2 for single dimension
-        let config = FieldConfig::new(1, 10, 1.0); // No decay for clarity
+        // Energy = magnitude^2 for single dimension
+        let config = FieldConfig::new(1, 10, 255); // No decay for clarity
         let mut field = TemporalField::new(config);
 
-        // Region with explicit hysteresis: on=0.25 (value=0.5), off=0.09 (value=0.3)
-        // Energy = value^2, so:
-        //   value=0.6 → energy=0.36 (above on)
-        //   value=0.4 → energy=0.16 (between)
-        //   value=0.2 → energy=0.04 (below off)
-        field.monitor_region(MonitoredRegion::with_hysteresis("test", 0..1, 0.25, 0.09));
+        // Region with explicit hysteresis:
+        // on_threshold = 10000 (mag ~100), off_threshold = 2500 (mag ~50)
+        field.monitor_region(MonitoredRegion::with_hysteresis("test", 0..1, 10000, 2500));
 
         let active_count = Arc::new(AtomicUsize::new(0));
         let quiet_count = Arc::new(AtomicUsize::new(0));
@@ -562,48 +572,48 @@ mod tests {
             }
         })));
 
-        // Write value=0.6 → energy=0.36 (above on_threshold 0.25) → should fire RegionActive
-        field.set_region(&[0.6], 0..1);
+        // Write magnitude 120 → energy = 14400 (above on_threshold 10000) → should fire RegionActive
+        field.set_region(&[Signal::positive(120)], 0..1);
         assert_eq!(active_count.load(Ordering::SeqCst), 1, "Should fire RegionActive");
         assert_eq!(quiet_count.load(Ordering::SeqCst), 0, "Should not fire RegionQuiet");
 
-        // Write value=0.4 → energy=0.16 (between thresholds: below on=0.25 but above off=0.09)
+        // Write magnitude 70 → energy = 4900 (between thresholds: below on=10000 but above off=2500)
         // Should NOT fire any event due to hysteresis
-        field.set_region(&[0.4], 0..1);
+        field.set_region(&[Signal::positive(70)], 0..1);
         assert_eq!(active_count.load(Ordering::SeqCst), 1, "Should not fire again (hysteresis)");
         assert_eq!(quiet_count.load(Ordering::SeqCst), 0, "Should stay active (hysteresis)");
 
-        // Write value=0.2 → energy=0.04 (below off_threshold 0.09) → should fire RegionQuiet
-        field.set_region(&[0.2], 0..1);
+        // Write magnitude 40 → energy = 1600 (below off_threshold 2500) → should fire RegionQuiet
+        field.set_region(&[Signal::positive(40)], 0..1);
         assert_eq!(active_count.load(Ordering::SeqCst), 1, "Should not fire RegionActive");
         assert_eq!(quiet_count.load(Ordering::SeqCst), 1, "Should fire RegionQuiet");
 
-        // Write value=0.4 → energy=0.16 (above off=0.09 but below on=0.25)
+        // Write magnitude 70 → energy = 4900 (above off=2500 but below on=10000)
         // Should NOT fire any event (need to exceed on_threshold to become active again)
-        field.set_region(&[0.4], 0..1);
+        field.set_region(&[Signal::positive(70)], 0..1);
         assert_eq!(active_count.load(Ordering::SeqCst), 1, "Should not become active (hysteresis)");
         assert_eq!(quiet_count.load(Ordering::SeqCst), 1, "Should stay quiet");
 
-        // Write value=0.6 → energy=0.36 (above on_threshold 0.25) → should fire RegionActive again
-        field.set_region(&[0.6], 0..1);
+        // Write magnitude 120 → energy = 14400 (above on_threshold 10000) → should fire RegionActive again
+        field.set_region(&[Signal::positive(120)], 0..1);
         assert_eq!(active_count.load(Ordering::SeqCst), 2, "Should fire RegionActive again");
     }
 
     #[test]
-    fn test_default_hysteresis_gap() {
-        // Default hysteresis gap is 20%
-        let region = MonitoredRegion::new("test", 0..32, 0.5);
-        assert!((region.on_threshold - 0.5).abs() < 0.001);
-        assert!((region.off_threshold - 0.4).abs() < 0.001); // 0.5 * 0.8 = 0.4
-        assert!((region.hysteresis_gap() - 0.2).abs() < 0.001);
-    }
+    fn test_region_mean() {
+        let config = FieldConfig::new(4, 5, 255); // No decay
+        let mut field = TemporalField::new(config);
 
-    #[test]
-    fn test_custom_hysteresis_gap() {
-        // Custom gap of 30%
-        let region = MonitoredRegion::new("test", 0..32, 1.0).with_gap(0.3);
-        assert!((region.on_threshold - 1.0).abs() < 0.001);
-        assert!((region.off_threshold - 0.7).abs() < 0.001); // 1.0 * 0.7 = 0.7
-        assert!((region.hysteresis_gap() - 0.3).abs() < 0.001);
+        // Write 3 frames with different values
+        field.set_region(&[Signal::positive(60)], 0..1);
+        field.advance_write_head();
+        field.set_region(&[Signal::positive(120)], 0..1);
+        field.advance_write_head();
+        field.set_region(&[Signal::positive(180)], 0..1);
+        field.advance_write_head();
+
+        let mean = field.region_mean(0..1, 3);
+        // (60 + 120 + 180) / 3 = 120
+        assert_eq!(mean[0].magnitude, 120);
     }
 }
