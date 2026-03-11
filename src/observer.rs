@@ -25,29 +25,29 @@ pub enum FieldEvent {
     RegionActive {
         region: Range<usize>,
         /// Energy as sum of squared magnitudes
-        energy: u32,
+        energy: u64,
         /// The on_threshold that was crossed
-        threshold: u32,
+        threshold: u64,
     },
     /// A region went quiet (energy dropped below off_threshold)
     RegionQuiet {
         region: Range<usize>,
         /// Energy as sum of squared magnitudes
-        energy: u32,
+        energy: u64,
         /// The off_threshold that was crossed
-        threshold: u32,
+        threshold: u64,
     },
     /// Multiple regions active simultaneously (binding opportunity)
     Convergence {
         active_regions: Vec<Range<usize>>,
         /// Total weighted energy (sum of energy × weight for each active region)
-        total_energy: u32,
+        total_energy: u64,
     },
     /// Peak detected in a region (local maximum)
     Peak {
         region: Range<usize>,
-        /// Energy as sum of squared magnitudes
-        energy: u32,
+        /// Energy as sum of squared effective magnitudes
+        energy: u64,
         tick: u64,
     },
 }
@@ -119,10 +119,10 @@ pub struct MonitoredRegion {
     /// Dimension range
     pub range: Range<usize>,
     /// Energy threshold to enter active state (higher threshold)
-    /// Energy = sum of squared magnitudes
-    pub on_threshold: u32,
+    /// Energy = sum of squared effective magnitudes (p×m×k)
+    pub on_threshold: u64,
     /// Energy threshold to leave active state (lower threshold)
-    pub off_threshold: u32,
+    pub off_threshold: u64,
     /// Weight for convergence calculation (100 = 1.0×)
     pub weight: u8,
 }
@@ -134,12 +134,12 @@ impl MonitoredRegion {
     /// providing a 20% hysteresis gap to prevent chattering.
     ///
     /// threshold: Energy threshold (sum of squared magnitudes)
-    pub fn new(name: impl Into<String>, range: Range<usize>, threshold: u32) -> Self {
+    pub fn new(name: impl Into<String>, range: Range<usize>, threshold: u64) -> Self {
         Self {
             name: name.into(),
             range,
             on_threshold: threshold,
-            off_threshold: threshold * (100 - DEFAULT_HYSTERESIS_GAP as u32) / 100,
+            off_threshold: threshold * (100 - DEFAULT_HYSTERESIS_GAP as u64) / 100,
             weight: 100,
         }
     }
@@ -155,8 +155,8 @@ impl MonitoredRegion {
     pub fn with_hysteresis(
         name: impl Into<String>,
         range: Range<usize>,
-        on_threshold: u32,
-        off_threshold: u32,
+        on_threshold: u64,
+        off_threshold: u64,
     ) -> Self {
         debug_assert!(
             off_threshold <= on_threshold,
@@ -178,7 +178,7 @@ impl MonitoredRegion {
     /// off_threshold = on_threshold * (100 - gap) / 100
     pub fn with_gap(mut self, gap: u8) -> Self {
         let gap = gap.min(100);
-        self.off_threshold = self.on_threshold * (100 - gap as u32) / 100;
+        self.off_threshold = self.on_threshold * (100 - gap as u64) / 100;
         self
     }
 

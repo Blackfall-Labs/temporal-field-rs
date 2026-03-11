@@ -2,11 +2,11 @@
 //!
 //! The brain does not poll - one spark cascades.
 //!
-//! ASTRO_004 compliant: No floats. Signal (polarity + magnitude) throughout.
+//! ASTRO_004 compliant: No floats. Signal (polarity × magnitude × multiplier) throughout.
 //!
 //! # Core Types
 //!
-//! - **Signal**: Universal 2-byte neural signal (polarity: i8, magnitude: u8)
+//! - **Signal**: Universal 3-byte neural signal (polarity: i8, magnitude: u8, multiplier: u8)
 //! - **TemporalField**: Ring buffer with decay and pub/sub events
 //!
 //! # Architecture: Field / Writer / Reader
@@ -27,7 +27,7 @@
 //! - **Decay per tick**: Time encoded in values, not metadata (retention: u8, 255 = 1.0)
 //! - **Regions**: Spatial partitioning for multi-channel integration
 //! - **Pub/sub**: Writes fire events to observers automatically
-//! - **Signal**: Compact neural representation (s = polarity × magnitude)
+//! - **Signal**: Compact neural representation (s = polarity × magnitude × multiplier)
 //!
 //! # Integer Conventions
 //!
@@ -45,7 +45,7 @@
 //!
 //! ```rust
 //! use temporal_field::{TemporalField, FieldConfig, FieldEvent, MonitoredRegion, FnObserver};
-//! use ternsig::Signal;
+//! use ternary_signal::Signal;
 //! use std::sync::Arc;
 //!
 //! // Region definitions (like SensoryField's ModalityRegions)
@@ -106,8 +106,8 @@ pub use field::TemporalField;
 pub use observer::{FieldEvent, FieldObserver, FnObserver, MonitoredRegion, TriggerConfig};
 pub use vector::FieldVector;
 
-// Signal: Re-export from ternsig (the authoritative source)
-pub use ternsig::Signal;
+// Signal: Re-export from ternary-signal (the authoritative source)
+pub use ternary_signal::Signal;
 
 // Deprecated alias for v1 compatibility
 #[deprecated(since = "0.4.0", note = "Use Signal instead")]

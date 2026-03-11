@@ -12,7 +12,7 @@ use crate::observer::{FieldEvent, FieldObserver, MonitoredRegion, TriggerConfig}
 use crate::vector::FieldVector;
 use std::ops::Range;
 use std::sync::Arc;
-use ternsig::Signal;
+use ternary_signal::Signal;
 
 /// The temporal field - ring buffer with decay and pub/sub events.
 ///
@@ -115,7 +115,7 @@ impl TemporalField {
         }
 
         let mut active_regions = Vec::new();
-        let mut total_energy: u32 = 0;
+        let mut total_energy: u64 = 0;
 
         for (i, region) in self.triggers.regions.iter().enumerate() {
             let energy = self.frames[self.write_head].range_energy(region.range.clone());
@@ -154,7 +154,7 @@ impl TemporalField {
             if is_active {
                 active_regions.push(region.range.clone());
                 // Weighted energy: energy × weight / 100 (since weight 100 = 1.0×)
-                total_energy += (energy as u64 * region.weight as u64 / 100) as u32;
+                total_energy += energy * region.weight as u64 / 100;
             }
 
             // Update state
@@ -239,12 +239,12 @@ impl TemporalField {
     }
 
     /// Get energy in a region of current frame.
-    pub fn region_energy(&self, range: Range<usize>) -> u32 {
+    pub fn region_energy(&self, range: Range<usize>) -> u64 {
         self.frames[self.write_head].range_energy(range)
     }
 
     /// Check if region is active (energy above threshold).
-    pub fn region_active(&self, range: Range<usize>, threshold: u32) -> bool {
+    pub fn region_active(&self, range: Range<usize>, threshold: u64) -> bool {
         self.region_energy(range) > threshold
     }
 
@@ -271,7 +271,7 @@ impl TemporalField {
         }
 
         let mut best_frame_idx = 0;
-        let mut best_energy = 0u32;
+        let mut best_energy = 0u64;
 
         for (i, frame) in frames.iter().enumerate() {
             let energy = frame.range_energy(range.clone());
@@ -285,7 +285,7 @@ impl TemporalField {
     }
 
     /// Get mean values in a region over the last N frames.
-    /// Returns averaged Signal values (via i16 arithmetic).
+    /// Returns averaged Signal values using the full p×m×k range.
     pub fn region_mean(&self, range: Range<usize>, window: usize) -> Vec<Signal> {
         let frames = self.read_window(window);
         if frames.is_empty() {
@@ -293,17 +293,17 @@ impl TemporalField {
         }
 
         let len = range.len();
-        let mut sums: Vec<i32> = vec![0; len];
+        let mut sums: Vec<i64> = vec![0; len];
 
         for frame in &frames {
             for (i, idx) in range.clone().enumerate() {
-                sums[i] += frame.get_i16(idx) as i32;
+                sums[i] += frame.get_current(idx) as i64;
             }
         }
 
-        let n = frames.len() as i32;
+        let n = frames.len() as i64;
         sums.iter()
-            .map(|&sum| Signal::from_signed_i32(sum / n))
+            .map(|&sum| Signal::from_current((sum / n) as i32))
             .collect()
     }
 
@@ -346,8 +346,8 @@ impl TemporalField {
         self.config.frame_count
     }
 
-    /// Get maximum magnitude in field.
-    pub fn max_magnitude(&self) -> u8 {
+    /// Get maximum effective magnitude in field.
+    pub fn max_magnitude(&self) -> u16 {
         self.frames
             .iter()
             .map(|f| f.max_magnitude())
